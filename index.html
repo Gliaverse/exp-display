@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Maple EXP Tracker</title>
+<style>
+:root{color-scheme:dark}body{font-family:system-ui,sans-serif;background:#151515;color:#eee;margin:0;padding:24px}main{max-width:980px;margin:auto}.card{background:#222;padding:18px;border-radius:12px;margin:16px 0}button{padding:10px 14px;margin:4px 8px 4px 0}button:disabled{opacity:.5}.tracker{font-variant-numeric:tabular-nums;display:grid;grid-template-columns:1fr 1fr;gap:12px 28px;font-size:1.05rem}.metric{display:flex;justify-content:space-between;gap:18px;border-bottom:1px solid #383838;padding:7px 0}.metric strong{font-weight:650}.muted{color:#aaa}.good{color:#9ee493}.warn{color:#ffd27d}.controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px}details{margin-top:16px}label{display:inline-flex;align-items:center;gap:5px}input{width:76px}canvas{max-width:100%;background:#000;border:1px solid #555}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.pixel{image-rendering:pixelated}.crop,.processed{width:464px;height:60px}pre{white-space:pre-wrap;font-size:.85rem}.diag{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 24px;margin:12px 0}.diagrow{display:flex;justify-content:space-between;gap:14px;border-bottom:1px solid #333;padding:5px 0}.diagrow span{color:#aaa}.diagrow strong{font-variant-numeric:tabular-nums;text-align:right}.diagok{color:#9ee493}.diagwarn{color:#ffd27d}.diagbad{color:#ff9a9a}@media(max-width:700px){.diag{grid-template-columns:1fr}}.statusline{margin-left:4px}.sessionline{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-top:10px;font-variant-numeric:tabular-nums}@media(max-width:700px){.tracker,.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body><main>
+<h1>Maple EXP Tracker</h1>
+<p class="muted">A minimal, personal-use EXP tracker for MapleStory Classic World. Capture and OCR run entirely in your browser—no MapleStory process or memory access, and no session data is saved to disk.</p><p id="browserWarning" class="muted" hidden><strong>Browser notice:</strong> Chrome or Edge is recommended. Firefox produced stale screen-capture frames during project testing.</p>
+<div class="card">
+  <div class="controls"><button id="start">Share MapleStory Window</button><button id="stop" disabled>Stop</button><button id="compact">Open Compact Window</button></div>
+  <div class="sessionline"><span id="status" class="statusline">Not capturing.</span><span>Session&nbsp;&nbsp;<strong id="session">--</strong></span></div>
+</div>
+<div class="card">
+  <div class="tracker">
+    <div class="metric"><span>Level</span><strong id="level">--</strong></div>
+    <div class="metric"><span>EXP</span><strong id="exp">--</strong></div>
+    <div class="metric"><span>EXP/hr</span><strong id="exphr">--</strong></div>
+    <div class="metric"><span>%/hr</span><strong id="pcthr">--</strong></div>
+    <div class="metric"><span>Level in</span><strong id="eta">--</strong></div>
+    <div class="metric"><span>%/min</span><strong id="pctmin">--</strong></div>
+  </div>
+</div>
+<details id="diagnostics" class="card"><summary>Calibration / OCR diagnostics</summary>
+<p class="muted">Defaults are the verified Chrome capture geometry. The green rectangle should surround only the 1366×768 MapleStory content.</p>
+<div class="controls"><label>X <input id="gx" type="number" value="1"></label><label>Y <input id="gy" type="number" value="31"></label><label>Width <input id="gw" type="number" value="1366"></label><label>Height <input id="gh" type="number" value="768"></label><label>Poll seconds <input id="poll" type="number" min="2" value="15"></label></div>
+<div id="dims" class="muted"></div><div id="frameStatus" class="muted">Video frame: waiting...</div>
+<div class="diag">
+  <div class="diagrow"><span>Capture health</span><strong id="captureHealth">Waiting</strong></div>
+  <div class="diagrow"><span>Last video frame</span><strong id="lastFrameAge">--</strong></div>
+  <div class="diagrow"><span>Game image</span><strong id="gameChange">Waiting</strong></div>
+  <div class="diagrow"><span>EXP crop</span><strong id="cropChange">Waiting</strong></div>
+  <div class="diagrow"><span>Last game change</span><strong id="lastGameChange">--</strong></div>
+  <div class="diagrow"><span>Last EXP change</span><strong id="lastCropChange">--</strong></div>
+  <div class="diagrow"><span>Last OCR</span><strong id="lastOcrAge">--</strong></div>
+  <div class="diagrow"><span>OCR result</span><strong id="ocrResult">Waiting</strong></div>
+</div>
+<canvas id="frame" width="687" height="401"></canvas>
+<div class="grid"><div><h3>EXP crop</h3><canvas id="crop" width="116" height="15" class="crop pixel"></canvas></div><div><h3>Processed OCR</h3><canvas id="processed" width="290" height="38" class="processed pixel"></canvas></div></div>
+<pre id="debug">Waiting...</pre>
+</details>
+<p class="muted" style="text-align:center;margin:20px 0 4px"><a href="https://github.com/Gliaverse/exp-display" target="_blank" rel="noopener noreferrer" style="color:inherit">View source code and project documentation on GitHub</a></p>
+<video id="video" autoplay muted playsinline hidden></video><canvas id="game" width="1366" height="768" hidden></canvas>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+const OCR_POLL_SECONDS=15, ROLLING_WINDOW_SECONDS=300, IDLE_SECONDS=180, RATE_WARMUP_SECONDS=55;
+const PERCENT_TOLERANCE=.12,SUSPICIOUS_GAIN_FACTOR=2,MIN_SUSPICIOUS_RATE=100000,WARMUP_SUSPICIOUS_RATE=400000,SUSPICIOUS_CONFIRMATIONS=2,MISMATCH_CONFIRMATIONS=2,CONFIRM_EXP_TOLERANCE=.003,LOSS_PERCENT_TREND_TOLERANCE=.15,LOSS_BAD_PERCENT_CONFIRMATIONS=3;
+const NORMAL_W=1366,NORMAL_H=768,CROP_X=718,CROP_Y=734,CROP_W=116,CROP_H=15,SCALE=2.5,THRESHOLD=150;
+const EXP_TABLE=[15,34,57,92,135,372,560,840,1242,1716,2360,3216,4200,5460,7050,8840,11040,13716,16680,20216,24402,28980,34320,40512,47216,54900,63666,73080,83720,95700,108480,122760,138666,155540,174216,194832,216600,240500,266682,294216,324240,356916,391160,428280,468450,510420,555680,604416,655200,709716,748608,789631,832902,878545,926689,977471,1031036,1087536,1147132,1209994,1276301,1346242,1420016,1497832,1579913,1666492,1757815,1854143,1955750,2062925,2175973,2295216,2420993,2553663,2693603,2841212,2996910,3161140,3334370,3517093,3709829,3913127,4127566,4353756,4592341,4844001,5109452,5389449,5684790,11938059,25069923,52646838,110558359,232172553,487562361,1023880958,2150150011,4515315023,9482161548];
+const $=s=>document.querySelector(s),video=$('#video'),game=$('#game'),crop=$('#crop'),processed=$('#processed'),frame=$('#frame'),diagnostics=$('#diagnostics');
+const diagnosticsEnabled=()=>diagnostics.open;
+const gctx=game.getContext('2d'),cctx=crop.getContext('2d'),pctx=processed.getContext('2d'),fctx=frame.getContext('2d');
+let stream=null,worker=null,timer=null,raf=null,busy=false,pendingGain=null,pendingLoss=null;
+let frameSerial=0,lastFrameMediaTime=null,lastFrameWallTime=null,lastPresentedFrames=null,lastTotalVideoFrames=null,frameCallbackId=null;
+// Diagnostic-only state. This does not participate in EXP validation or rate calculations.
+let lastGameSignature=null,lastCropSignature=null,lastGameChangeWallTime=null,lastCropChangeWallTime=null,lastOcrWallTime=null,lastOcrSummary='Waiting';
+const FRAME_STALL_MS=3000,IMAGE_STATIC_WARN_MS=30000;
+const stateChannel=new BroadcastChannel('maple-exp-tracker-state');
+const tracker={level:null,currentExp:null,percent:null,history:[],totalEarned:0,lastProgressTime:null,lastSampleTime:null,sessionElapsed:0,captureStartedAt:null};
+const now=()=>performance.now()/1000;
+function geom(){return ['gx','gy','gw','gh'].map(id=>Number($('#'+id).value)||0)}
+function validGeom(x,y,w,h){return w>0&&h>0&&x>=0&&y>=0&&x+w<=video.videoWidth&&y+h<=video.videoHeight}
+function absoluteProgress(level,exp){let s=exp;for(let i=0;i<level-1;i++)s+=EXP_TABLE[i];return s}
+function percentCandidates(p){return p>=10&&p<20?[p,p-10]:[p]}
+function validateExactReading(exp,p){if(exp==null||exp<0||!(p>0&&p<=100))return null;const est=exp/(p/100);let best=null,err=Infinity;EXP_TABLE.forEach((req,i)=>{const e=Math.abs(est-req)/req;if(e<err){err=e;best=i+1}});if(err>.01)return null;const actual=exp/EXP_TABLE[best-1]*100;return Math.abs(actual-p)<=.03?best:null}
+function percentMatches(level,exp,p){if(exp==null||level<1||level>EXP_TABLE.length)return [false,null,null];const req=EXP_TABLE[level-1];if(exp<0||exp>req)return [false,null,null];const derived=exp/req*100;for(const candidate of percentCandidates(p))if(Math.abs(derived-candidate)<=PERCENT_TOLERANCE)return [true,derived,candidate];return [false,derived,null]}
+function isIdle(){return tracker.lastProgressTime!=null&&now()-tracker.lastProgressTime>=IDLE_SECONDS}
+function prune(t=now()){const cutoff=t-ROLLING_WINDOW_SECONDS;while(tracker.history.length>1&&tracker.history[1][0]<=cutoff)tracker.history.shift()}
+function initialize(level,exp,p){const t=now();Object.assign(tracker,{level,currentExp:exp,percent:p,totalEarned:0,lastProgressTime:t,lastSampleTime:t,history:[[t,0]]})}
+function update(level,exp,p,expLoss=false){const t=now();if(tracker.level==null){initialize(level,exp,p);return}const delta=absoluteProgress(level,exp)-absoluteProgress(tracker.level,tracker.currentExp),wasIdle=isIdle();if(expLoss)tracker.history.push([t,tracker.totalEarned]);else if(delta>0){if(wasIdle)tracker.history=[[t,tracker.totalEarned]];tracker.totalEarned+=delta;tracker.history.push([t,tracker.totalEarned]);tracker.lastProgressTime=t}else if(delta===0)tracker.history.push([t,tracker.totalEarned]);else return;Object.assign(tracker,{level,currentExp:exp,percent:p,lastSampleTime:t});prune(t)}
+function expPerHour(){if(isIdle()||tracker.history.length<2)return 0;prune();const [st,se]=tracker.history[0],[et,ee]=tracker.history.at(-1),elapsed=et-st,gained=ee-se;return elapsed<RATE_WARMUP_SECONDS||gained<=0?0:gained/elapsed*3600}
+function pctPerHour(){const r=expPerHour();return r>0&&tracker.level?r/EXP_TABLE[tracker.level-1]*100:0}
+function etaSeconds(){const r=expPerHour();if(isIdle()||r<=0||tracker.level==null)return null;return Math.max(EXP_TABLE[tracker.level-1]-tracker.currentExp,0)/r*3600}
+function suspiciousForward(level,exp,t){if(tracker.level==null||tracker.lastSampleTime==null)return [false,0,0];const elapsed=Math.max(t-tracker.lastSampleTime,1),delta=absoluteProgress(level,exp)-absoluteProgress(tracker.level,tracker.currentExp);if(delta<=0)return [false,0,0];const inst=delta/elapsed*3600,est=expPerHour(),limit=est>0?Math.max(MIN_SUSPICIOUS_RATE,est*SUSPICIOUS_GAIN_FACTOR):WARMUP_SUSPICIOUS_RATE;return [inst>limit,inst,limit]}
+function pendingGainConfirmed(level,exp,t,reason){const tol=Math.max(2,Math.floor(EXP_TABLE[level-1]*CONFIRM_EXP_TOLERANCE)),need=reason==='rate'?SUSPICIOUS_CONFIRMATIONS:MISMATCH_CONFIRMATIONS;let confirmations=1;if(pendingGain&&pendingGain.level===level&&pendingGain.reason===reason&&exp>=pendingGain.exp&&exp-pendingGain.exp<=tol)confirmations=pendingGain.confirmations+1;pendingGain={level,exp,t,confirmations,reason};return confirmations>=need}
+function adoptWithoutEarned(level,exp,derived,t){Object.assign(tracker,{level,currentExp:exp,percent:derived,lastSampleTime:t,lastProgressTime:t,history:[[t,tracker.totalEarned]]});pendingGain=pendingLoss=null}
+function acceptForward(level,exp,ocrPercent){if(exp==null||level<1||level>EXP_TABLE.length||exp<0||exp>EXP_TABLE[level-1])return false;const [percentOk,derived]=percentMatches(level,exp,ocrPercent),t=now(),[suspicious]=suspiciousForward(level,exp,t);if(percentOk&&!suspicious){pendingGain=pendingLoss=null;update(level,exp,derived);return true}if(suspicious){if(pendingGainConfirmed(level,exp,t,'rate')){update(level,exp,derived);pendingGain=pendingLoss=null;return true}return false}if(pendingGainConfirmed(level,exp,t,'percent')){adoptWithoutEarned(level,exp,derived,t);return true}return false}
+function handleLoss(level,exp,ocrPercent){const current=tracker.currentExp,req=EXP_TABLE[level-1];if(exp==null||exp<0||exp>=current)return false;const [percentOk,derived]=percentMatches(level,exp,ocrPercent),observed=Math.min(...percentCandidates(ocrPercent).map(p=>({p,d:Math.abs(p-tracker.percent)})).sort((a,b)=>a.d-b.d).map(x=>x.p).slice(0,1));if(!percentOk&&observed>=tracker.percent-LOSS_PERCENT_TREND_TOLERANCE){pendingLoss=null;return false}if(!pendingLoss){pendingLoss={baseline:current,firstLower:exp,confirmations:1,baselinePercent:tracker.percent,sawPercentMatch:percentOk};pendingGain=null;return false}const tol=Math.max(2,Math.floor(req*CONFIRM_EXP_TOLERANCE)),compatible=exp<pendingLoss.baseline&&exp>=pendingLoss.firstLower&&exp-pendingLoss.firstLower<=tol;if(!compatible){pendingLoss=null;return false}pendingLoss.confirmations++;pendingLoss.sawPercentMatch ||= percentOk;const need=pendingLoss.sawPercentMatch?2:LOSS_BAD_PERCENT_CONFIRMATIONS;if(pendingLoss.confirmations<need)return false;if(!pendingLoss.sawPercentMatch&&observed>=pendingLoss.baselinePercent-LOSS_PERCENT_TREND_TOLERANCE){pendingLoss=null;return false}update(level,exp,derived,true);pendingLoss=pendingGain=null;return true}
+function processReading(exp,p){if(tracker.level==null){for(const candidate of percentCandidates(p)){const level=validateExactReading(exp,candidate);if(level!=null){initialize(level,exp,exp/EXP_TABLE[level-1]*100);pendingGain=pendingLoss=null;return true}}return false}const level=tracker.level,current=tracker.currentExp,req=EXP_TABLE[level-1];if(exp!=null&&exp>=current&&exp<=req)return acceptForward(level,exp,p);const canLevel=level<EXP_TABLE.length,nearEnd=current>=req*.90,wrapped=exp!=null&&exp<current;if(canLevel&&nearEnd&&wrapped){const newLevel=level+1,newReq=EXP_TABLE[newLevel-1],[newOk]=percentMatches(newLevel,exp,p),[oldOk]=percentMatches(level,exp,p),looksLikeWrap=exp>=0&&exp<=newReq*.10;if(exp<=newReq&&(newOk||(!oldOk&&looksLikeWrap)))return acceptForward(newLevel,exp,p);return handleLoss(level,exp,p)}if(exp!=null&&exp>=0&&exp<current)return handleLoss(level,exp,p);pendingLoss=pendingGain=null;return false}
+function parseText(raw){const text=raw.toUpperCase().replace(/\n/g,' ').replace(/S/g,'5').trim(),pct=text.indexOf('%');if(pct<0)return{text,error:'No percent sign found'};const before=text.slice(0,pct),m=before.match(/(100|\d{1,2})[\.,](\d{2})\s*$/);if(!m)return{text,error:'Could not parse percentage'};const percent=Number(`${m[1]}.${m[2]}`);if(percent<0||percent>100)return{text,error:'Percentage out of range'};let expPart=before.slice(0,m.index);if(expPart.endsWith('1'))expPart=expPart.slice(0,-1);expPart=expPart.replace('EXP','');const digits=expPart.replace(/\D/g,'');return{text,exp:digits?Number(digits):null,percent}}
+function ageText(t){if(t==null)return '--';const s=Math.max(0,(performance.now()-t)/1000);return s<1?'<1s':s<60?`${s.toFixed(1)}s`:`${Math.floor(s/60)}m ${Math.floor(s%60)}s`}
+function signature(ctx,w,h,step=12){const data=ctx.getImageData(0,0,w,h).data;let hsh=2166136261>>>0;for(let y=0;y<h;y+=step){for(let x=0;x<w;x+=step){const i=(y*w+x)*4;const v=(data[i]+data[i+1]+data[i+2])>>>2;hsh^=v;hsh=Math.imul(hsh,16777619)>>>0}}return hsh}
+function updateImageDiagnostics(){
+  if(!diagnosticsEnabled()||!stream||!video.videoWidth)return;
+  // Sample the normalized game canvas and the raw EXP crop after buildImages() draws them.
+  const gs=signature(gctx,NORMAL_W,NORMAL_H,32),cs=signature(cctx,CROP_W,CROP_H,3),t=performance.now();
+  if(lastGameSignature==null||gs!==lastGameSignature)lastGameChangeWallTime=t;
+  if(lastCropSignature==null||cs!==lastCropSignature)lastCropChangeWallTime=t;
+  lastGameSignature=gs;lastCropSignature=cs;
+}
+function refreshDiagnostics(){
+  const t=performance.now(),frameAge=lastFrameWallTime==null?Infinity:t-lastFrameWallTime;
+  const health=$('#captureHealth');
+  if(!stream){health.textContent='Stopped';health.className='';}
+  else if(frameAge>FRAME_STALL_MS){health.textContent='STALLED';health.className='diagbad';}
+  else{health.textContent='LIVE';health.className='diagok';}
+  $('#lastFrameAge').textContent=lastFrameWallTime==null?'--':ageText(lastFrameWallTime);
+  const gameStatic=lastGameChangeWallTime!=null&&t-lastGameChangeWallTime>IMAGE_STATIC_WARN_MS;
+  const cropStatic=lastCropChangeWallTime!=null&&t-lastCropChangeWallTime>IMAGE_STATIC_WARN_MS;
+  $('#gameChange').textContent=lastGameSignature==null?'Waiting':gameStatic?'STATIC 30s+':'Changing/recent';
+  $('#gameChange').className=gameStatic?'diagwarn':'diagok';
+  $('#cropChange').textContent=lastCropSignature==null?'Waiting':cropStatic?'STATIC 30s+':'Changing/recent';
+  $('#cropChange').className=cropStatic?'diagwarn':'diagok';
+  $('#lastGameChange').textContent=lastGameChangeWallTime==null?'--':ageText(lastGameChangeWallTime);
+  $('#lastCropChange').textContent=lastCropChangeWallTime==null?'--':ageText(lastCropChangeWallTime);
+  $('#lastOcrAge').textContent=lastOcrWallTime==null?'--':ageText(lastOcrWallTime);
+  $('#ocrResult').textContent=lastOcrSummary;
+}
+function buildImages(){if(!video.videoWidth)throw Error('Capture video is not ready.');const [x,y,w,h]=geom();if(!validGeom(x,y,w,h))throw Error(`Game rectangle is outside captured ${video.videoWidth}x${video.videoHeight}.`);gctx.imageSmoothingEnabled=true;gctx.imageSmoothingQuality='high';gctx.drawImage(video,x,y,w,h,0,0,NORMAL_W,NORMAL_H);cctx.drawImage(game,CROP_X,CROP_Y,CROP_W,CROP_H,0,0,CROP_W,CROP_H);processed.width=Math.round(CROP_W*SCALE);processed.height=Math.round(CROP_H*SCALE);pctx.imageSmoothingEnabled=true;pctx.imageSmoothingQuality='high';pctx.drawImage(crop,0,0,processed.width,processed.height);const im=pctx.getImageData(0,0,processed.width,processed.height),d=im.data;for(let i=0;i<d.length;i+=4){const gray=Math.round(.299*d[i]+.587*d[i+1]+.114*d[i+2]),v=gray>THRESHOLD?255:0;d[i]=d[i+1]=d[i+2]=v}pctx.putImageData(im,0,0);if(diagnosticsEnabled())updateImageDiagnostics()}
+
+function publishState(){
+  stateChannel.postMessage({type:'state',status:$('#status').textContent,session:$('#session').textContent,level:$('#level').textContent,exp:$('#exp').textContent,exphr:$('#exphr').textContent,pcthr:$('#pcthr').textContent,eta:$('#eta').textContent,pctmin:$('#pctmin').textContent});
+}
+function openCompact(){
+  const w=window.open('compact.html','mapleExpCompact','width=500,height=255,resizable=yes,scrollbars=no');
+  if(!w){$('#status').textContent='Chrome/Edge blocked the compact window. Allow pop-ups for localhost and try again.';return}
+  compactWindow=w;
+  setTimeout(publishState,250);
+}
+
+async function ensureWorker(){if(worker)return;$('#status').textContent='Loading Tesseract...';worker=await Tesseract.createWorker('eng');await worker.setParameters({tessedit_pageseg_mode:Tesseract.PSM.SINGLE_LINE})}
+async function scan(){if(busy||!stream)return;busy=true;try{const before=frameSnapshot();const fresh=await waitForNewFrame(before,2500);if(!fresh)throw Error('Chrome/Edge capture stream did not deliver a genuinely new video frame. The shared window may be stalled.');buildImages();await ensureWorker();$('#status').textContent='Running OCR...';const {data}=await worker.recognize(processed),parsed=parseText(data.text);let accepted=false;if(!parsed.error&&parsed.exp!=null)accepted=processReading(parsed.exp,parsed.percent);lastOcrWallTime=performance.now();lastOcrSummary=parsed.error?'PARSE FAILED':accepted?'ACCEPTED':'HELD / SKIPPED';$('#debug').textContent=`Raw: ${JSON.stringify(data.text)}\nClean: ${parsed.text}\nEXP: ${parsed.exp??'--'}\nPercent: ${parsed.percent!==undefined?parsed.percent.toFixed(2)+'%':'--'}\nTracker accepted: ${accepted}${parsed.error?'\nError: '+parsed.error:''}`;$('#exp').textContent=parsed.error?'Parse failed':`${parsed.exp?.toLocaleString()??'--'} / ${parsed.percent?.toFixed(2)??'--'}%`;$('#status').textContent=parsed.error?'OCR parse failed; sample skipped.':accepted?'Tracking.':'OCR parsed; sample held/skipped by validation.'}catch(e){lastOcrWallTime=performance.now();lastOcrSummary='ERROR';$('#debug').textContent='Error: '+e.message;$('#status').textContent='Error.'}finally{busy=false;if(diagnosticsEnabled())refreshDiagnostics()}}
+function fmtEta(s){if(s==null)return '--';s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),sec=s%60;return h?`${h}h ${String(m).padStart(2,'0')}m`:m?`${m}m ${String(sec).padStart(2,'0')}s`:`${sec}s`}
+function fmtSession(){if(tracker.captureStartedAt==null&&tracker.sessionElapsed<=0)return '--';let s=Math.max(0,Math.floor(tracker.sessionElapsed+(tracker.captureStartedAt==null?0:now()-tracker.captureStartedAt)));const h=Math.floor(s/3600);s%=3600;const m=Math.floor(s/60),sec=s%60;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`}
+function refresh(){$('#session').textContent=fmtSession();if(tracker.level==null){$('#level').textContent='--';if(!stream)$('#exp').textContent='--';$('#exphr').textContent=$('#pcthr').textContent=$('#pctmin').textContent=$('#eta').textContent='--';publishState();return}$('#level').textContent=tracker.level;$('#exp').textContent=`${tracker.currentExp.toLocaleString()} / ${tracker.percent.toFixed(2)}%`;if(isIdle()){$('#exphr').textContent=$('#pcthr').textContent=$('#pctmin').textContent='Idle';$('#eta').textContent='--'}else{const r=expPerHour();if(r<=0){$('#exphr').textContent=$('#pcthr').textContent=$('#pctmin').textContent='Calculating...';$('#eta').textContent='--'}else{const ph=pctPerHour();$('#exphr').textContent=Math.floor(r).toLocaleString();$('#pcthr').textContent=`${ph.toFixed(2)}%`;$('#pctmin').textContent=`${(ph/60).toFixed(3)}%`;$('#eta').textContent=fmtEta(etaSeconds())}}publishState()}
+function renderPreview(){
+  if(!stream||!video.videoWidth)return;
+  const vw=video.videoWidth,vh=video.videoHeight,scale=Math.min(1,850/vw);
+  frame.width=Math.round(vw*scale);frame.height=Math.round(vh*scale);
+  fctx.drawImage(video,0,0,frame.width,frame.height);
+  const [x,y,w,h]=geom();fctx.strokeStyle='#42ff75';fctx.lineWidth=2;fctx.strokeRect(x*scale,y*scale,w*scale,h*scale);
+}
+function playbackFrameCount(){
+  try{const q=video.getVideoPlaybackQuality?.();return q&&Number.isFinite(q.totalVideoFrames)?q.totalVideoFrames:null}catch{return null}
+}
+function frameSnapshot(){
+  return {mediaTime:Number.isFinite(lastFrameMediaTime)?lastFrameMediaTime:null,presented:Number.isFinite(lastPresentedFrames)?lastPresentedFrames:null,total:playbackFrameCount()};
+}
+function frameAdvanced(before){
+  const total=playbackFrameCount();
+  if(before.total!=null&&total!=null&&total>before.total)return true;
+  if(before.presented!=null&&lastPresentedFrames!=null&&lastPresentedFrames>before.presented)return true;
+  if(before.mediaTime!=null&&lastFrameMediaTime!=null&&lastFrameMediaTime>before.mediaTime+.0001)return true;
+  return false;
+}
+function onVideoFrame(_now,meta){
+  if(!stream)return;
+  frameSerial++;
+  lastFrameMediaTime=Number.isFinite(meta.mediaTime)?meta.mediaTime:null;
+  lastPresentedFrames=Number.isFinite(meta.presentedFrames)?meta.presentedFrames:null;
+  lastTotalVideoFrames=playbackFrameCount();
+  lastFrameWallTime=performance.now();
+  const mt=lastFrameMediaTime==null?'--':lastFrameMediaTime.toFixed(3)+'s';
+  const pf=lastPresentedFrames==null?'--':lastPresentedFrames.toLocaleString();
+  const tf=lastTotalVideoFrames==null?'--':lastTotalVideoFrames.toLocaleString();
+  if(diagnosticsEnabled()){
+    $('#frameStatus').textContent=`Video callback: ${frameSerial.toLocaleString()} | media: ${mt} | presented: ${pf} | total frames: ${tf}`;
+    renderPreview();
+  }
+  frameCallbackId=video.requestVideoFrameCallback(onVideoFrame);
+}
+function startFrameMonitor(){
+  frameSerial=0;lastFrameMediaTime=null;lastFrameWallTime=null;lastPresentedFrames=null;lastTotalVideoFrames=null;
+  if('requestVideoFrameCallback' in video){frameCallbackId=video.requestVideoFrameCallback(onVideoFrame)}
+  else{
+    const tick=()=>{if(!stream)return;frameSerial++;lastFrameMediaTime=video.currentTime;lastTotalVideoFrames=playbackFrameCount();lastFrameWallTime=performance.now();if(diagnosticsEnabled()){$('#frameStatus').textContent=`Video tick: ${frameSerial.toLocaleString()} | currentTime: ${video.currentTime.toFixed(3)}s | total frames: ${lastTotalVideoFrames??'--'}`;renderPreview()}raf=requestAnimationFrame(tick)};tick();
+  }
+}
+function waitForNewFrame(before,timeoutMs){
+  if(frameAdvanced(before))return Promise.resolve(true);
+  return new Promise(resolve=>{const started=performance.now();const check=()=>{if(!stream)return resolve(false);if(frameAdvanced(before))return resolve(true);if(performance.now()-started>=timeoutMs)return resolve(false);setTimeout(check,50)};check()});
+}
+
+function clearStoppedDiagnostics(){
+  const set=(id,v)=>{const el=$('#'+id);if(el)el.textContent=v};
+  set('captureHealth','Stopped'); set('lastVideoFrame','--');
+  set('gameImageState','--'); set('expCropState','--');
+  set('lastGameChange','--'); set('lastExpChange','--');
+  set('lastOcr','--'); set('ocrResult','Stopped');
+}
+function schedule(){clearInterval(timer);if(!stream)return;const s=Math.max(2,Number($('#poll').value)||OCR_POLL_SECONDS);timer=setInterval(scan,s*1000)}
+async function stop(){clearInterval(timer);timer=null;if(raf)cancelAnimationFrame(raf);if(frameCallbackId!=null&&'cancelVideoFrameCallback' in video)video.cancelVideoFrameCallback(frameCallbackId);frameCallbackId=null;if(tracker.captureStartedAt!=null){tracker.sessionElapsed+=now()-tracker.captureStartedAt;tracker.captureStartedAt=null}if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;video.srcObject=null;$('#start').disabled=false;$('#stop').disabled=true;$('#frameStatus').textContent='Video frame: stopped';lastOcrSummary='Stopped';$('#status').textContent='Stopped.';refreshDiagnostics();publishState();if(worker){await worker.terminate();worker=null}}
+stateChannel.onmessage=e=>{if(e.data&&e.data.type==='request-state')publishState()};
+$('#compact').onclick=openCompact;
+$('#start').onclick=async()=>{try{stream=await navigator.mediaDevices.getDisplayMedia({video:{displaySurface:'window',frameRate:{ideal:10,max:15}},audio:false});video.srcObject=stream;await video.play();const track=stream.getVideoTracks()[0],settings=track.getSettings();$('#dims').textContent=`Captured: ${video.videoWidth} x ${video.videoHeight} | surface: ${settings.displaySurface||'unknown'}`;track.addEventListener('ended',stop);tracker.captureStartedAt=now();$('#start').disabled=true;$('#stop').disabled=false;$('#status').textContent='Capture started; waiting for OCR.';startFrameMonitor();schedule();setTimeout(scan,500)}catch(e){$('#status').textContent=`Capture failed: ${e.message}`}};
+$('#stop').onclick=stop;$('#poll').onchange=schedule;['gx','gy','gw','gh'].forEach(id=>$('#'+id).addEventListener('change',()=>{if(stream)scan()}));diagnostics.addEventListener('toggle',()=>{if(diagnosticsEnabled()){renderPreview();refreshDiagnostics()}});setInterval(()=>{refresh();if(diagnosticsEnabled())refreshDiagnostics()},1000);refresh();window.addEventListener('beforeunload',()=>{if(stream)stream.getTracks().forEach(t=>t.stop())});
+</script></body></html>
